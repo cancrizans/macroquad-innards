@@ -411,6 +411,7 @@ pub fn render_target_ex(width: u32, height: u32, params: RenderTargetParams) -> 
         width,
         height,
         sample_count: params.sample_count,
+        format : miniquad::TextureFormat::RGBA16F,
         ..Default::default()
     });
     let depth_texture = if params.depth {
@@ -433,6 +434,7 @@ pub fn render_target_ex(width: u32, height: u32, params: RenderTargetParams) -> 
             get_quad_context().new_render_texture(miniquad::TextureParams {
                 width,
                 height,
+                format : miniquad::TextureFormat::RGBA16F,
                 ..Default::default()
             });
         render_pass = get_quad_context().new_render_pass_mrt(
