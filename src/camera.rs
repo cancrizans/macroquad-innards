@@ -270,6 +270,13 @@ pub fn set_camera(camera: &dyn Camera) {
     context.camera_matrix = Some(camera.matrix());
 }
 
+pub fn flush_render_passes(){
+    let context = get_context();
+
+    // flush previous camera draw calls
+    context.perform_render_passes();
+}
+
 /// Reset default 2D camera mode.
 pub fn set_default_camera() {
     let context = get_context();

@@ -633,6 +633,7 @@ pub struct Texture2D {
 
 impl Drop for TextureSlotGuarded {
     fn drop(&mut self) {
+        println!("Dropping a texture: {:?}", self.0);
         let ctx = get_context();
         ctx.textures.schedule_removed(self.0);
     }
