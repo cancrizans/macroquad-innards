@@ -38,7 +38,7 @@
 
 use miniquad::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
@@ -189,8 +189,8 @@ struct Context {
     mouse_pressed: HashSet<MouseButton>,
     mouse_released: HashSet<MouseButton>,
     touches: HashMap<u64, input::Touch>,
-    chars_pressed_queue: Vec<char>,
-    chars_pressed_ui_queue: Vec<char>,
+    chars_pressed_queue: VecDeque<char>,
+    chars_pressed_ui_queue: VecDeque<char>,
     mouse_position: Vec2,
     last_mouse_position: Option<Vec2>,
     mouse_wheel: Vec2,
@@ -273,6 +273,8 @@ enum MiniquadInputEvent {
         x: f32,
         y: f32,
     },
+    WindowMinimized,
+    WindowRestored,
 }
 
 impl MiniquadInputEvent {
@@ -295,6 +297,8 @@ impl MiniquadInputEvent {
             } => t.key_down_event(*keycode, *modifiers, *repeat),
             KeyUp { keycode, modifiers } => t.key_up_event(*keycode, *modifiers),
             Touch { phase, id, x, y } => t.touch_event(*phase, *id, *x, *y),
+            WindowMinimized => t.window_minimized_event(),
+            WindowRestored => t.window_restored_event(),
         }
     }
 }
@@ -321,8 +325,8 @@ impl Context {
             keys_down: HashSet::new(),
             keys_pressed: HashSet::new(),
             keys_released: HashSet::new(),
-            chars_pressed_queue: Vec::new(),
-            chars_pressed_ui_queue: Vec::new(),
+            chars_pressed_queue: VecDeque::new(),
+            chars_pressed_ui_queue: VecDeque::new(),
             mouse_down: HashSet::new(),
             mouse_pressed: HashSet::new(),
             mouse_released: HashSet::new(),
@@ -593,7 +597,7 @@ impl EventHandler for Stage {
 
     fn mouse_button_up_event(&mut self, btn: MouseButton, x: f32, y: f32) {
         let context = get_context();
-
+        //     println!("btn = {}", btn as u32);
         context.mouse_down.remove(&btn);
         context.mouse_released.insert(btn);
 
@@ -605,6 +609,32 @@ impl EventHandler for Stage {
         if !context.cursor_grabbed {
             context.mouse_position = Vec2::new(x, y);
         }
+        if context.update_on.mouse_up {
+            miniquad::window::schedule_update();
+        }
+    }
+
+    fn mouse_leave_event(&mut self) {
+        let context = get_context();
+        context.mouse_released.extend(context.mouse_down.drain());
+    }
+
+    fn mouse_enter_event(&mut self, btn: MouseButton, x: f32, y: f32) {
+        let context = get_context();
+
+        if !context.cursor_grabbed {
+            context.mouse_position = Vec2::new(x, y);
+        }
+
+        context
+            .input_events
+            .iter_mut()
+            .for_each(|arr| arr.push(MiniquadInputEvent::MouseButtonUp { x, y, btn }));
+        if btn != MouseButton::Unknown {
+            context.mouse_down.insert(btn);
+            context.mouse_pressed.insert(btn);
+        }
+
         if context.update_on.mouse_up {
             miniquad::window::schedule_update();
         }
@@ -642,13 +672,17 @@ impl EventHandler for Stage {
             .input_events
             .iter_mut()
             .for_each(|arr| arr.push(MiniquadInputEvent::Touch { phase, id, x, y }));
+
+        if context.update_on.mouse_down {
+            miniquad::window::schedule_update();
+        }
     }
 
     fn char_event(&mut self, character: char, modifiers: KeyMods, repeat: bool) {
         let context = get_context();
 
-        context.chars_pressed_queue.push(character);
-        context.chars_pressed_ui_queue.push(character);
+        context.chars_pressed_queue.push_back(character);
+        context.chars_pressed_ui_queue.push_back(character);
 
         context.input_events.iter_mut().for_each(|arr| {
             arr.push(MiniquadInputEvent::Char {
@@ -768,10 +802,17 @@ impl EventHandler for Stage {
             get_context().frame_time = date::now() - get_context().last_frame_time;
             get_context().last_frame_time = date::now();
 
+            // glFinish waits until the drawing is done. See https://registry.khronos.org/OpenGL-Refpages/gl4/html/glFinish.xhtml.
+            // Some drivers do this by a busy loop which increases CPU usage to close to 100%.
+            // For discussion see https://github.com/not-fl3/macroquad/issues/275.
+            // If telemetry is enabled it kinda makes sense to call glFinish so that the telemetry
+            // timing is more representative of the time it took to draw. But for general use and
+            // in particular when double buffer is used it's not recommended to call glFinish,
+            // unless we use SyncObjects or we have to wait for other async operations to finish.
+            // See https://wikis.khronos.org/opengl/Common_Mistakes#glFinish_and_glFlush.
             #[cfg(any(target_arch = "wasm32", target_os = "linux"))]
-            {
+            if telemetry::is_enabled() {
                 let _z = telemetry::ZoneGuard::new("glFinish/glFLush");
-
                 unsafe {
                     miniquad::gl::glFlush();
                     miniquad::gl::glFinish();
@@ -783,17 +824,40 @@ impl EventHandler for Stage {
     }
 
     fn window_restored_event(&mut self) {
+        let context = get_context();
+
         #[cfg(target_os = "android")]
-        get_context().audio_context.resume();
+        context.audio_context.resume();
         #[cfg(target_os = "android")]
         if miniquad::window::blocking_event_loop() {
             miniquad::window::schedule_update();
         }
+
+        context
+            .input_events
+            .iter_mut()
+            .for_each(|arr| arr.push(MiniquadInputEvent::WindowRestored));
     }
 
     fn window_minimized_event(&mut self) {
+        let context = get_context();
+
         #[cfg(target_os = "android")]
-        get_context().audio_context.pause();
+        context.audio_context.pause();
+
+        // Clear held down keys and button and announce them as released
+        context.mouse_released.extend(context.mouse_down.drain());
+        context.keys_released.extend(context.keys_down.drain());
+
+        // Announce all touches as released
+        for (_, touch) in context.touches.iter_mut() {
+            touch.phase = input::TouchPhase::Ended;
+        }
+
+        context
+            .input_events
+            .iter_mut()
+            .for_each(|arr| arr.push(MiniquadInputEvent::WindowMinimized));
     }
 
     fn quit_requested_event(&mut self) {

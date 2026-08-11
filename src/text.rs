@@ -110,7 +110,7 @@ impl Font {
             Image {
                 bytes: bitmap
                     .iter()
-                    .flat_map(|coverage| vec![255, 255, 255, *coverage])
+                    .flat_map(|coverage| [255, 255, 255, *coverage])
                     .collect(),
                 width,
                 height,
@@ -150,11 +150,14 @@ impl Font {
 
     pub(crate) fn measure_text(
         &self,
-        text: &str,
+        text: impl AsRef<str>,
         font_size: u16,
         font_scale_x: f32,
         font_scale_y: f32,
+        mut glyph_callback: impl FnMut(f32),
     ) -> TextDimensions {
+        let text = text.as_ref();
+
         let dpi_scaling = miniquad::window::dpi_scale();
         let font_size = (font_size as f32 * dpi_scaling).ceil() as u16;
 
@@ -172,7 +175,9 @@ impl Font {
 
             let atlas = self.atlas.lock().unwrap();
             let glyph = atlas.get(font_data.sprite).unwrap().rect;
-            width += font_data.advance * font_scale_x;
+            let advance = font_data.advance * font_scale_x;
+            glyph_callback(advance);
+            width += advance;
             min_y = min_y.min(offset_y);
             max_y = max_y.max(glyph.h * font_scale_y + offset_y);
         }
@@ -213,7 +218,7 @@ impl Font {
     /// # use macroquad::prelude::*;
     /// # #[macroquad::main("test")]
     /// # async fn main() {
-    /// let font = Font::default();
+    /// let mut font = get_default_font();
     /// font.set_filter(FilterMode::Linear);
     /// # }
     /// ```
@@ -226,6 +231,12 @@ impl Font {
 
     //     font.font_texture
     // }
+}
+
+impl Default for Font {
+    fn default() -> Self {
+        get_default_font()
+    }
 }
 
 /// Arguments for "draw_text_ex" function such as font, font_size etc
@@ -292,7 +303,13 @@ pub fn load_ttf_font_from_bytes(bytes: &[u8]) -> Result<Font, Error> {
 
 /// Draw text with given font_size
 /// Returns text size
-pub fn draw_text(text: &str, x: f32, y: f32, font_size: f32, color: Color) -> TextDimensions {
+pub fn draw_text(
+    text: impl AsRef<str>,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    color: Color,
+) -> TextDimensions {
     draw_text_ex(
         text,
         x,
@@ -308,7 +325,9 @@ pub fn draw_text(text: &str, x: f32, y: f32, font_size: f32, color: Color) -> Te
 
 /// Draw text with custom params such as font, font size and font scale
 /// Returns text size
-pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) -> TextDimensions {
+pub fn draw_text_ex(text: impl AsRef<str>, x: f32, y: f32, params: TextParams) -> TextDimensions {
+    let text = text.as_ref();
+
     if text.is_empty() {
         return TextDimensions::default();
     }
@@ -323,15 +342,23 @@ pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) -> TextDimen
     let font_scale_x = params.font_scale * params.font_scale_aspect;
     let font_scale_y = params.font_scale;
     let font_size = (params.font_size as f32 * dpi_scaling).ceil() as u16;
+    let font_size_f32 = font_size as f32;
 
     let mut total_width = 0.0;
     let mut max_offset_y = f32::MIN;
     let mut min_offset_y = f32::MAX;
 
+    let mut last_character = None;
+
     for character in text.chars() {
         if !font.contains(character, font_size) {
             font.cache_glyph(character, font_size);
         }
+
+        let kerning_offset = last_character
+            .and_then(|left| font.font.horizontal_kern(left, character, font_size_f32))
+            .unwrap_or(0.0);
+        last_character = Some(character);
 
         let char_data = &font.characters.lock().unwrap()[&(character, font_size)];
         let offset_x = char_data.offset_x as f32 * font_scale_x;
@@ -349,14 +376,20 @@ pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) -> TextDimen
         let dest_x = (offset_x + total_width) * rot_cos + (glyph_scaled_h + offset_y) * rot_sin;
         let dest_y = (offset_x + total_width) * rot_sin + (-glyph_scaled_h - offset_y) * rot_cos;
 
+        // Kerning shifts along the text-flow direction. At `rot = 0`
+        // text flows along +X, so the offset goes into dest.x; at
+        // 90° / 270° text flows along ±Y, so it needs to go into
+        // dest.y instead. Multiplying by (rot_cos, rot_sin) routes
+        // the offset into the correct axis for any rotation.
+        let kerning_logical = kerning_offset / dpi_scaling;
         let dest = Rect::new(
-            dest_x / dpi_scaling + x,
-            dest_y / dpi_scaling + y,
+            dest_x / dpi_scaling + x + kerning_logical * rot_cos,
+            dest_y / dpi_scaling + y + kerning_logical * rot_sin,
             glyph.w / dpi_scaling * font_scale_x,
             glyph.h / dpi_scaling * font_scale_y,
         );
 
-        total_width += char_data.advance * font_scale_x;
+        total_width += char_data.advance * font_scale_x + kerning_offset;
 
         crate::texture::draw_texture_ex(
             &crate::texture::Texture2D {
@@ -385,13 +418,13 @@ pub fn draw_text_ex(text: &str, x: f32, y: f32, params: TextParams) -> TextDimen
 /// Draw multiline text with the given font_size, line_distance_factor and color.
 /// If no line distance but a custom font is given, the fonts line gap will be used as line distance factor if it exists.
 pub fn draw_multiline_text(
-    text: &str,
+    text: impl AsRef<str>,
     x: f32,
     y: f32,
     font_size: f32,
     line_distance_factor: Option<f32>,
     color: Color,
-) {
+) -> TextDimensions {
     draw_multiline_text_ex(
         text,
         x,
@@ -403,41 +436,57 @@ pub fn draw_multiline_text(
             color,
             ..Default::default()
         },
-    );
+    )
 }
 
 /// Draw multiline text with the given line distance and custom params such as font, font size and font scale.
 /// If no line distance but a custom font is given, the fonts newline size will be used as line distance factor if it exists, else default to font size.
 pub fn draw_multiline_text_ex(
-    text: &str,
+    text: impl AsRef<str>,
     mut x: f32,
     mut y: f32,
     line_distance_factor: Option<f32>,
     params: TextParams,
-) {
+) -> TextDimensions {
     let line_distance = match line_distance_factor {
         Some(distance) => distance,
         None => {
-            let mut font_line_distance = 1.0;
-            if let Some(font) = params.font {
-                if let Some(metrics) = font.font.horizontal_line_metrics(1.0) {
-                    font_line_distance = metrics.new_line_size;
-                }
+            let mut font_line_distance = 0.0;
+            let font = if let Some(font) = params.font {
+                font
+            } else {
+                &get_default_font()
+            };
+            if let Some(metrics) = font.font.horizontal_line_metrics(1.0) {
+                font_line_distance = metrics.new_line_size;
             }
+
             font_line_distance
         }
     };
 
-    for line in text.lines() {
-        draw_text_ex(line, x, y, params.clone());
+    let mut dimensions = TextDimensions::default();
+    let y_step = line_distance * params.font_size as f32 * params.font_scale;
+
+    for line in text.as_ref().lines() {
+        let line_dimensions = draw_text_ex(line, x, y, params.clone());
         x -= (line_distance * params.font_size as f32 * params.font_scale) * params.rotation.sin();
         y += (line_distance * params.font_size as f32 * params.font_scale) * params.rotation.cos();
+
+        dimensions.width = f32::max(dimensions.width, line_dimensions.width);
+        dimensions.height += y_step;
+
+        if dimensions.offset_y == 0.0 {
+            dimensions.offset_y = line_dimensions.offset_y;
+        }
     }
+
+    dimensions
 }
 
 /// Get the text center.
 pub fn get_text_center(
-    text: &str,
+    text: impl AsRef<str>,
     font: Option<&Font>,
     font_size: u16,
     font_scale: f32,
@@ -452,14 +501,116 @@ pub fn get_text_center(
 }
 
 pub fn measure_text(
-    text: &str,
+    text: impl AsRef<str>,
     font: Option<&Font>,
     font_size: u16,
     font_scale: f32,
 ) -> TextDimensions {
     let font = font.unwrap_or_else(|| &get_context().fonts_storage.default_font);
 
-    font.measure_text(text, font_size, font_scale, font_scale)
+    font.measure_text(text, font_size, font_scale, font_scale, |_| {})
+}
+
+pub fn measure_multiline_text(
+    text: &str,
+    font: Option<&Font>,
+    font_size: u16,
+    font_scale: f32,
+    line_distance_factor: Option<f32>,
+) -> TextDimensions {
+    let font = font.unwrap_or_else(|| &get_context().fonts_storage.default_font);
+    let line_distance = match line_distance_factor {
+        Some(distance) => distance,
+        None => match font.font.horizontal_line_metrics(1.0) {
+            Some(metrics) => metrics.new_line_size,
+            None => 1.0,
+        },
+    };
+
+    let mut dimensions = TextDimensions::default();
+    let y_step = line_distance * font_size as f32 * font_scale;
+
+    for line in text.lines() {
+        let line_dimensions = font.measure_text(line, font_size, font_scale, font_scale, |_| {});
+
+        dimensions.width = f32::max(dimensions.width, line_dimensions.width);
+        dimensions.height += y_step;
+        if dimensions.offset_y == 0.0 {
+            dimensions.offset_y = line_dimensions.offset_y;
+        }
+    }
+
+    dimensions
+}
+
+/// Converts word breaks to newlines wherever the text would otherwise exceed the given length.
+pub fn wrap_text(
+    text: &str,
+    font: Option<&Font>,
+    font_size: u16,
+    font_scale: f32,
+    maximum_line_length: f32,
+) -> String {
+    let font = font.unwrap_or_else(|| &get_context().fonts_storage.default_font);
+
+    // This is always a bit too much memory, but it saves a lot of reallocations.
+    let mut new_text =
+        String::with_capacity(text.len() + text.chars().filter(|c| c.is_whitespace()).count());
+
+    let mut current_word_start = 0usize;
+    let mut current_word_end = 0usize;
+    let mut characters = text.char_indices();
+    let mut total_width = 0.0;
+    let mut word_width = 0.0;
+
+    font.measure_text(text, font_size, font_scale, font_scale, |mut width| {
+        // It's impossible this is called more often than the text has characters.
+        let (idx, c) = characters.next().unwrap();
+        let mut keep_char = true;
+
+        if c.is_whitespace() {
+            new_text.push_str(&text[current_word_start..idx + c.len_utf8()]);
+            current_word_start = idx + c.len_utf8();
+            word_width = 0.0;
+            keep_char = false;
+
+            // If we would wrap, ignore the whitespace.
+            if total_width + width > maximum_line_length {
+                width = 0.0;
+            }
+        }
+
+        // If a single word expands past the length limit, just break it up.
+        if word_width + width > maximum_line_length {
+            new_text.push_str(&text[current_word_start..current_word_end]);
+            new_text.push('\n');
+            current_word_start = current_word_end;
+            total_width = 0.0;
+            word_width = 0.0;
+        }
+
+        current_word_end = idx + c.len_utf8();
+        if keep_char {
+            word_width += width;
+        }
+
+        if c == '\n' {
+            total_width = 0.0;
+            word_width = 0.0;
+            return;
+        }
+
+        total_width += width;
+
+        if total_width > maximum_line_length {
+            new_text.push('\n');
+            total_width = word_width;
+        }
+    });
+
+    new_text.push_str(&text[current_word_start..current_word_end]);
+
+    new_text
 }
 
 pub(crate) struct FontsStorage {
@@ -473,6 +624,18 @@ impl FontsStorage {
         let default_font = Font::load_from_bytes(atlas, include_bytes!("ProggyClean.ttf")).unwrap();
         FontsStorage { default_font }
     }
+}
+
+/// Returns macroquads default font.
+pub fn get_default_font() -> Font {
+    let context = get_context();
+    context.fonts_storage.default_font.clone()
+}
+
+/// Replaces macroquads default font with `font`.
+pub fn set_default_font(font: Font) {
+    let context = get_context();
+    context.fonts_storage.default_font = font;
 }
 
 /// From given font size in world space gives

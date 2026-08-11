@@ -10,14 +10,15 @@ pub use miniquad;
 pub use miniquad::conf::Conf;
 
 /// Block execution until the next frame.
+#[must_use = "use `next_frame().await` to advance to the next frame"]
 pub fn next_frame() -> crate::exec::FrameFuture {
     crate::thread_assert::same_thread();
     crate::exec::FrameFuture::default()
 }
 
 /// Fill window background with solid color.
-/// Note: even when "clear_background" was not called explicitly
-/// screen will be cleared at the beginning of the frame.
+/// Note: even when "clear_background" is not called explicitly,
+/// the screen will be cleared at the beginning of the frame.
 pub fn clear_background(color: Color) {
     let context = get_context();
 
@@ -38,8 +39,8 @@ pub struct InternalGlContext<'a> {
 }
 
 impl<'a> InternalGlContext<'a> {
-    /// Draw all the batched stuff and reset the internal state cache
-    /// May be helpful for combining macroquad's drawing with raw miniquad/opengl calls
+    /// Draw all the batched stuff and reset the internal state cache.
+    /// May be helpful for combining macroquad's drawing with raw miniquad/opengl calls.
     pub fn flush(&mut self) {
         get_context().perform_render_passes();
     }
@@ -112,7 +113,7 @@ pub fn set_fullscreen(fullscreen: bool) {
 /// after a panic in user code will happen. Macroquad will also try to catch some OS
 /// panics, but not all of them - some compatibility bugs may end up crashing the app.
 ///
-/// Withot `set_panic_handler` macroquad will not use `catch_unwind` at all,
+/// Without `set_panic_handler` macroquad will not use `catch_unwind` at all,
 /// therefore `panic_handler` is completely optional.
 /// NOTE: only with "backtrace" macroquad feature `backtrace` string will contain an
 /// actual backtrace. Otherwise only panic location and message will be available.
