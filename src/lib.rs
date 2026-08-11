@@ -860,7 +860,7 @@ impl From<miniquad::conf::Conf> for conf::Conf {
             update_on: None,
             default_filter_mode: crate::FilterMode::Linear,
             draw_call_vertex_capacity: 10000,
-            draw_call_index_capacity: 5000,
+            draw_call_index_capacity: 10000,
         }
     }
 }

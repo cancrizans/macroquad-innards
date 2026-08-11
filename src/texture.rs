@@ -8,6 +8,7 @@ use crate::{
 pub use crate::quad_gl::FilterMode;
 use crate::quad_gl::{DrawMode, Vertex};
 use glam::{vec2, Vec2};
+use miniquad::TextureParams;
 use slotmap::{TextureIdSlotMap, TextureSlotId};
 use std::sync::Arc;
 
@@ -602,6 +603,15 @@ pub fn draw_texture_ex(
     context.gl.geometry(&vertices, &indices);
 }
 
+pub fn draw_quad(texture: &Texture2D, vertices : [Vertex;4]){
+    let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+    let context = get_context();
+
+    context.gl.texture(Some(texture));
+    context.gl.draw_mode(DrawMode::Triangles);
+    context.gl.geometry(&vertices, &indices);
+}
+
 /// Get pixel data from screen buffer and return an Image (screenshot)
 pub fn get_screen_data() -> Image {
     unsafe {
@@ -734,6 +744,33 @@ impl Texture2D {
     /// ```
     pub fn from_rgba8(width: u16, height: u16, bytes: &[u8]) -> Texture2D {
         let texture = get_quad_context().new_texture_from_rgba8(width, height, bytes);
+        let ctx = get_context();
+        let texture = ctx.textures.store_texture(texture);
+        let texture = Texture2D { texture };
+        texture.set_filter(ctx.default_filter_mode);
+
+        ctx.texture_batcher.add_unbatched(&texture);
+
+        texture
+    }
+
+    pub fn from_rgba16f(width: u16, height: u16, bytes: &[u8]) -> Texture2D {
+        assert_eq!(width as usize * height as usize * 4 * 2, bytes.len());
+
+        let texture = get_quad_context().new_texture_from_data_and_format(bytes, TextureParams{
+
+            kind: miniquad::graphics::TextureKind::Texture2D,
+            width: width as _,
+            height: height as _,
+            format: miniquad::graphics::TextureFormat::RGBA16F,
+            wrap: miniquad::graphics::TextureWrap::Clamp,
+            min_filter: FilterMode::Linear,
+            mag_filter: FilterMode::Linear,
+            mipmap_filter: miniquad::graphics::MipmapFilterMode::None,
+            allocate_mipmaps: false,
+            sample_count: 1,
+            
+        });
         let ctx = get_context();
         let texture = ctx.textures.store_texture(texture);
         let texture = Texture2D { texture };
